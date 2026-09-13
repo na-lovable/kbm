@@ -43,8 +43,8 @@ import "@xyflow/react/dist/style.css";
 import {
   GraphQueryResult,
   KnowledgeNode as OKFKnowledgeNode,
-} from "../types/knowledge";
-import { KnowledgeNode } from "@/components/knowledge-node";
+} from "@/types/knowledge";
+import { KnowledgeNode } from "@/components/kbm-elements/knowledge-node";
 
 interface GraphVisualizerProps {
   selectedNode: GraphQueryResult;

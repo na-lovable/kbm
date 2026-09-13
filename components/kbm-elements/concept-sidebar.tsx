@@ -22,7 +22,7 @@ import {
   filterTree,
   getFolderPathsToFile,
   TreeItemView,
-} from "@/components/file-tree";
+} from "@/components/kbm-elements/file-tree";
 
 interface ConceptSidebarProps {
   open: boolean;

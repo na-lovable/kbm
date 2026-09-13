@@ -1,7 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
-import { GraphQueryResult } from "../types/knowledge";
+import { GraphQueryResult } from "@/types/knowledge";
 import { PANEL_TOOLBAR_CLASS } from "@/lib/layout-classes";
 import {
   BookOpenIcon,

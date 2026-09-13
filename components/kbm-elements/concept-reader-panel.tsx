@@ -14,10 +14,10 @@ import {
   Layers,
   Network,
 } from "lucide-react";
-import { ConnectedNodeSummary, GraphQueryResult } from "../types/knowledge";
+import { ConnectedNodeSummary, GraphQueryResult } from "@/types/knowledge";
 import { getBreadcrumbSegments } from "@/lib/connection-categories";
 import { stripLeadingH1 } from "@/lib/markdown-links";
-import { ConceptConnectionsPanel } from "@/components/concept-connections-panel";
+import { ConceptConnectionsPanel } from "@/components/kbm-elements/concept-connections-panel";
 import { KnowledgeMarkdown } from "./knowledge-markdown";
 
 interface ConceptReaderPanelProps {

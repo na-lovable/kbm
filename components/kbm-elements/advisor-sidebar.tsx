@@ -2,13 +2,13 @@
 
 import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
-import { ChatPanelSkeleton } from "@/components/panel-skeletons";
+import { ChatPanelSkeleton } from "@/components/kbm-elements/panel-skeletons";
 import { CaretRightIcon, SparkleIcon } from "@phosphor-icons/react";
 import { PANEL_TOOLBAR_CLASS } from "@/lib/layout-classes";
 
 const GroundedChatPanel = dynamic(
   () =>
-    import("@/components/grounded-chat-panel").then(
+    import("@/components/kbm-elements/grounded-chat-panel").then(
       (mod) => mod.GroundedChatPanel,
     ),
   {

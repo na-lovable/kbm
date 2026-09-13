@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { ConnectedNodeSummary } from "../types/knowledge";
+import { ConnectedNodeSummary } from "@/types/knowledge";
 import {
   Collapsible,
   CollapsibleContent,

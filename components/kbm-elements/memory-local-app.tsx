@@ -12,21 +12,21 @@ import { categorizeConnections } from "@/lib/connection-categories";
 import { useKnowledgeGraph } from "@/lib/hooks/use-knowledge-graph";
 import { useReplayEngine } from "@/lib/hooks/use-replay-engine";
 import { useResponsivePanels } from "@/lib/hooks/use-responsive-panels";
-import { AppHeader } from "@/components/app-header";
-import { AdvisorSidebar } from "@/components/advisor-sidebar";
+import { AppHeader } from "@/components/kbm-elements/app-header";
+import { AdvisorSidebar } from "@/components/kbm-elements/advisor-sidebar";
 import {
   CenterViewToolbar,
   CenterView,
-} from "@/components/center-view-toolbar";
-import { ConceptEditorPanel } from "@/components/concept-editor-panel";
-import { ConceptReaderPanel } from "@/components/concept-reader-panel";
-import { ConceptSidebar } from "@/components/concept-sidebar";
-import { LinterDialog } from "@/components/linter-dialog";
-import { TemplatePickerDialog } from "@/components/template-picker-dialog";
+} from "@/components/kbm-elements/center-view-toolbar";
+import { ConceptEditorPanel } from "@/components/kbm-elements/concept-editor-panel";
+import { ConceptReaderPanel } from "@/components/kbm-elements/concept-reader-panel";
+import { ConceptSidebar } from "@/components/kbm-elements/concept-sidebar";
+import { LinterDialog } from "@/components/kbm-elements/linter-dialog";
+import { TemplatePickerDialog } from "@/components/kbm-elements/template-picker-dialog";
 import { ConceptTemplate } from "@/lib/concept-templates";
-import { ReplayControlsBar } from "@/components/replay-controls-bar";
-import { GraphPanelSkeleton } from "@/components/panel-skeletons";
-import { UnsavedChangesDialog } from "@/components/unsaved-changes-dialog";
+import { ReplayControlsBar } from "@/components/kbm-elements/replay-controls-bar";
+import { GraphPanelSkeleton } from "@/components/kbm-elements/panel-skeletons";
+import { UnsavedChangesDialog } from "@/components/kbm-elements/unsaved-changes-dialog";
 import { useUnsavedChangesGuard } from "@/lib/hooks/use-unsaved-changes-guard";
 import {
   ResizablePanelGroup,
@@ -35,10 +35,13 @@ import {
 } from "@/components/ui/resizable";
 import { Network } from "lucide-react";
 
-const GraphVisualizer = dynamic(() => import("@/components/graph-visualizer"), {
-  ssr: false,
-  loading: () => <GraphPanelSkeleton />,
-});
+const GraphVisualizer = dynamic(
+  () => import("@/components/kbm-elements/graph-visualizer"),
+  {
+    ssr: false,
+    loading: () => <GraphPanelSkeleton />,
+  },
+);
 
 interface MemoryLocalAppProps {
   initialNodes: KnowledgeNode[];

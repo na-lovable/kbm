@@ -11,14 +11,17 @@ import {
   parseInternalLinkSlug,
 } from "@/lib/markdown-links";
 
-const MermaidViewer = dynamic(() => import("@/components/mermaid-viewer"), {
-  ssr: false,
-  loading: () => (
-    <div className="my-4 p-6 rounded-lg border border-border/50 bg-muted/20 flex items-center justify-center text-xs text-muted-foreground animate-pulse">
-      Loading diagram…
-    </div>
-  ),
-});
+const MermaidViewer = dynamic(
+  () => import("@/components/kbm-elements/mermaid-viewer"),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="my-4 p-6 rounded-lg border border-border/50 bg-muted/20 flex items-center justify-center text-xs text-muted-foreground animate-pulse">
+        Loading diagram…
+      </div>
+    ),
+  },
+);
 
 interface KnowledgeMarkdownProps {
   content: string;

@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { KnowledgeNode } from "../types/knowledge";
+import { KnowledgeNode } from "@/types/knowledge";
 import {
   ChevronRight,
   ChevronDown,
@@ -95,7 +95,10 @@ export function collectLeafFolderPaths(node: TreeNode): Set<string> {
 }
 
 /** Ancestor folder paths leading to a file, for auto-expanding on selection. */
-export function getFolderPathsToFile(tree: TreeNode, filename: string): string[] {
+export function getFolderPathsToFile(
+  tree: TreeNode,
+  filename: string,
+): string[] {
   const paths: string[] = [];
 
   function walk(node: TreeNode, ancestors: string[]): boolean {
@@ -108,7 +111,9 @@ export function getFolderPathsToFile(tree: TreeNode, filename: string): string[]
     }
 
     for (const child of node.children) {
-      const nextAncestors = child.isFolder ? [...ancestors, child.path] : ancestors;
+      const nextAncestors = child.isFolder
+        ? [...ancestors, child.path]
+        : ancestors;
       if (walk(child, nextAncestors)) return true;
     }
     return false;

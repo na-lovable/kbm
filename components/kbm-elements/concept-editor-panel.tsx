@@ -57,7 +57,7 @@ import {
   GraphQueryResult,
   KnowledgeNode,
   SaveOKFResult,
-} from "../types/knowledge";
+} from "@/types/knowledge";
 import {
   handleSaveOKFAsset,
   handleSaveRawOKFFile,
@@ -70,8 +70,8 @@ import {
   loadDraft,
   saveDraft,
 } from "@/lib/draft-storage";
-import { DeleteConceptDialog } from "@/components/delete-concept-dialog";
-import { DraftRecoveryDialog } from "@/components/draft-recovery-dialog";
+import { DeleteConceptDialog } from "@/components/kbm-elements/delete-concept-dialog";
+import { DraftRecoveryDialog } from "@/components/kbm-elements/draft-recovery-dialog";
 import { KnowledgeMarkdown } from "./knowledge-markdown";
 
 export const CANONICAL_TYPES = [
@@ -256,15 +256,12 @@ export function ConceptEditorPanel({
     const nodeTitle = selectedNode.metadata.title || selectedNode.filename;
     const cleanBody = stripLeadingH1(selectedNode.rawContent || "");
 
-    const builtRaw = matter.stringify(
-      `# ${nodeTitle}\n\n${cleanBody}\n`,
-      {
-        type: selectedNode.type || "Asset",
-        title: nodeTitle,
-        description: selectedNode.metadata.description || "",
-        tags: currentTags,
-      },
-    );
+    const builtRaw = matter.stringify(`# ${nodeTitle}\n\n${cleanBody}\n`, {
+      type: selectedNode.type || "Asset",
+      title: nodeTitle,
+      description: selectedNode.metadata.description || "",
+      tags: currentTags,
+    });
 
     return {
       filename: selectedNode.filename,
@@ -585,7 +582,9 @@ export function ConceptEditorPanel({
       }, 0);
     } else {
       if (editorMode === "form") {
-        setMarkdownBody((prev) => `${prev}\n- Cross-reference: ${linkMarkdown}`);
+        setMarkdownBody(
+          (prev) => `${prev}\n- Cross-reference: ${linkMarkdown}`,
+        );
       } else {
         setRawContent((prev) => `${prev}\n- Cross-reference: ${linkMarkdown}`);
       }
@@ -599,10 +598,7 @@ export function ConceptEditorPanel({
 
   // Filter nodes for the link inserter
   const filteredNodesForLink = useMemo(() => {
-    const q = (inlineSearchQuery !== null
-      ? inlineSearchQuery
-      : linkSearchQuery
-    )
+    const q = (inlineSearchQuery !== null ? inlineSearchQuery : linkSearchQuery)
       .trim()
       .toLowerCase();
 
@@ -619,9 +615,7 @@ export function ConceptEditorPanel({
   }, [allNodes, linkSearchQuery, inlineSearchQuery]);
 
   // Handle Inline Typing for [[ and @ triggers
-  const handleTextareaKeyUp = (
-    e: React.KeyboardEvent<HTMLTextAreaElement>,
-  ) => {
+  const handleTextareaKeyUp = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const textarea = e.currentTarget;
     const cursorPos = textarea.selectionStart;
     const textBeforeCursor = textarea.value.substring(0, cursorPos);
@@ -1329,7 +1323,10 @@ export function ConceptEditorPanel({
                       >
                         <span>Document Markdown Body</span>
                         <span className="text-[10px] text-muted-foreground font-mono font-normal">
-                          (Type <code className="text-primary font-bold">[[</code> or <code className="text-primary font-bold">@</code> to link)
+                          (Type{" "}
+                          <code className="text-primary font-bold">[[</code> or{" "}
+                          <code className="text-primary font-bold">@</code> to
+                          link)
                         </span>
                       </Label>
 

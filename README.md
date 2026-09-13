@@ -63,7 +63,7 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
    ```bash
    pnpm dlx shadcn@latest add @ai-elements/[component]
    ```
-   `conversation`
+   `conversation` `message` `prompt-input` `shimmer`
 
 ## Getting Started
 
