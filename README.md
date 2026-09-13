@@ -16,8 +16,54 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
    "packageManager": "pnpm@12.3.4"
    ```
 
-1. pnpm dlx shadcn@latest init --preset b7C9v3ZEu --template next --pointer <-- install shadcn in the project with preset as given and Base UI>
-1.
+1. pnpm dlx shadcn@latest init --preset b7C9v3ZEu --template next --pointer <-- install shadcn in the project with preset as in the install command and default Base UI (Icon library - phospor icons)>
+1. Create github repo on logintotrystuff@gmail.com account (without readme, license, and .gitignore)
+1. Initialize git in the local repo.
+1. add git remote as the repo created above
+   ```pwsh
+   git remote add origin https://github.com/na-lovable/kbm.git
+   ```
+1. git push to the github repo
+   ```pwsh
+   git push -u origin main
+   ```
+1. Install the required backend libraries for this knowledge base management project
+   1. `dotenv` and `dotenv-expand` for environment variables management
+
+      ```bash
+      pnpm add dotenv dotenv-expand
+      ```
+
+   1. `openrouter` provider for `ai-sdk`
+      ```bash
+      pnpm add @openrouter/ai-sdk-provider
+      ```
+
+1. Install frontend libraries
+   1. `gray-matter`
+   2. `react-markdown` React component to render markdown.
+      ```bash
+      pnpm add react-markdown
+      ```
+   3. `rehype-raw`
+   4. `mermaid`
+   5. `@xyflow/react` graph visualizer for react
+      ```pwsh
+      pnpm add @xyflow/react
+      ```
+   6. `hh`
+1. Copy application code files and update imports
+1. Add the required `ui` components from `shadcn`
+   ```bash
+   pnpm dlx shadcn@latest add [component]
+   ```
+   `tooltip` `alert` `badge` `label` `scroll-area` `popover` `alert-dialog` `resizable`
+   `collapsible` `tabs`
+1. Add the required `ai-elements` components using shadcn CLI
+   ```bash
+   pnpm dlx shadcn@latest add @ai-elements/[component]
+   ```
+   `conversation`
 
 ## Getting Started
 
