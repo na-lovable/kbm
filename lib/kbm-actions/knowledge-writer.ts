@@ -1,5 +1,3 @@
-import fs from "fs";
-import path from "path";
 import matter from "gray-matter";
 import {
   WriteOKF,
@@ -8,8 +6,16 @@ import {
   SaveRawOKFInput,
   SaveOKFResult,
 } from "@/types/knowledge";
-
-const kbDirectory = path.join(process.cwd(), "knowledge-base");
+import {
+  listFiles,
+  readFile,
+  writeFile,
+  deleteFile,
+  renameFile,
+  batchCommit,
+  FileChange,
+} from "@/lib/github/file-store";
+import { rebuildAllIndexes, appendToLog } from "@/lib/github/index-manager";
 
 /**
  * Canonical domain dictionary mapping OKF type labels to normalized filesystem folders.
@@ -44,9 +50,9 @@ export function getCanonicalNamespace(
   existingPath?: string,
 ): string {
   if (existingPath) {
-    const parentDir = path.dirname(existingPath).replace(/\\/g, "/");
-    if (parentDir && parentDir !== "." && parentDir !== "") {
-      return parentDir;
+    const parts = existingPath.split("/");
+    if (parts.length > 1) {
+      return parts.slice(0, -1).join("/");
     }
   }
 
@@ -62,76 +68,61 @@ export function getCanonicalNamespace(
 }
 
 /**
- * Collects all markdown files within the knowledge base directory recursively.
+ * Collects all markdown files within the knowledge base from GitHub.
  */
-export function getAllMarkdownFiles(
-  dirPath: string = kbDirectory,
-  arrayOfFiles: string[] = [],
-): string[] {
-  if (!fs.existsSync(dirPath)) return arrayOfFiles;
-
-  const files = fs.readdirSync(dirPath);
-
-  files.forEach((file) => {
-    const absolutePath = path.join(dirPath, file);
-    if (fs.statSync(absolutePath).isDirectory()) {
-      arrayOfFiles = getAllMarkdownFiles(absolutePath, arrayOfFiles);
-    } else if (file.endsWith(".md")) {
-      arrayOfFiles.push(absolutePath);
-    }
-  });
-
-  return arrayOfFiles;
+export async function getAllMarkdownFiles(): Promise<string[]> {
+  return listFiles();
 }
 
 /**
- * Locates an absolute file path matching a query (slug or relative path).
+ * Locates a relative file path matching a query (slug or relative path).
  */
-export function findAbsolutePath(
+export async function findAbsolutePath(
   filenameQuery: string,
-  allPaths?: string[],
-): string | undefined {
-  const paths = allPaths || getAllMarkdownFiles(kbDirectory);
+): Promise<string | null> {
+  const allPaths = await listFiles();
   const cleanQuery = filenameQuery
     .replace(/\\/g, "/")
     .replace(/\.md$/, "")
     .toLowerCase();
 
-  // 1. Try relative path match (e.g. 'facilities/charging/automated-battery-swap-station')
-  const relMatch = paths.find((p) => {
-    const rel = path
-      .relative(kbDirectory, p)
-      .replace(/\\/g, "/")
-      .replace(/\.md$/, "")
-      .toLowerCase();
-    return rel === cleanQuery;
-  });
+  // 1. Try relative path match
+  const relMatch = allPaths.find(
+    (p) => p.toLowerCase() === cleanQuery,
+  );
   if (relMatch) return relMatch;
 
-  // 2. Try filename slug match (e.g. 'automated-battery-swap-station')
-  return paths.find((p) => path.parse(p).name.toLowerCase() === cleanQuery);
+  // 2. Try filename slug match
+  return allPaths.find((p) => {
+    const name = p.split("/").pop() || p;
+    return name.toLowerCase() === cleanQuery;
+  }) || null;
 }
 
 /**
  * Scans all markdown files in the repository and updates cross-links pointing from oldSlug to newSlug.
  */
-export function rewriteAssetReferences(
+export async function rewriteAssetReferences(
   oldSlug: string,
   newSlug: string,
-): { updatedFiles: string[] } {
-  const allFiles = getAllMarkdownFiles(kbDirectory);
+): Promise<{ updatedFiles: string[] }> {
+  const allFiles = await listFiles();
   const updatedFiles: string[] = [];
 
   const cleanOld = oldSlug.replace(/\\/g, "/").replace(/\.md$/, "");
   const cleanNew = newSlug.replace(/\\/g, "/").replace(/\.md$/, "");
-  const oldBaseName = path.parse(cleanOld).name;
-  const newBaseName = path.parse(cleanNew).name;
+  const oldBaseName = cleanOld.split("/").pop() || cleanOld;
+  const newBaseName = cleanNew.split("/").pop() || cleanNew;
 
-  allFiles.forEach((absPath) => {
-    if (absPath.endsWith("log.md")) return;
+  const changes: FileChange[] = [];
+
+  for (const relPath of allFiles) {
+    if (relPath === "log") continue;
 
     try {
-      const original = fs.readFileSync(absPath, "utf8");
+      const original = await readFile(relPath);
+      if (!original) continue;
+
       let content = original;
 
       // Replace explicit full paths
@@ -151,15 +142,22 @@ export function rewriteAssetReferences(
       }
 
       if (content !== original) {
-        fs.writeFileSync(absPath, content, "utf8");
-        updatedFiles.push(
-          path.relative(kbDirectory, absPath).replace(/\\/g, "/"),
-        );
+        changes.push({ path: relPath, content });
+        updatedFiles.push(relPath);
       }
     } catch (err) {
-      console.warn("Failed to rewrite references in file:", absPath, err);
+      console.warn("Failed to rewrite references in file:", relPath, err);
     }
-  });
+  }
+
+  // Batch commit all changes
+  if (changes.length > 0) {
+    await batchCommit(
+      changes,
+      [],
+      `Rewrite references: ${oldSlug} → ${newSlug}`,
+    );
+  }
 
   return { updatedFiles };
 }
@@ -167,14 +165,14 @@ export function rewriteAssetReferences(
 /**
  * Removes markdown links pointing to a deleted slug across the repository.
  */
-export function removeAssetReferences(deletedSlug: string): {
+export async function removeAssetReferences(deletedSlug: string): Promise<{
   updatedFiles: string[];
-} {
-  const allFiles = getAllMarkdownFiles(kbDirectory);
+}> {
+  const allFiles = await listFiles();
   const updatedFiles: string[] = [];
 
   const cleanDeleted = deletedSlug.replace(/\\/g, "/").replace(/\.md$/, "");
-  const deletedBaseName = path.parse(cleanDeleted).name;
+  const deletedBaseName = cleanDeleted.split("/").pop() || cleanDeleted;
 
   const linkPatterns = [
     new RegExp(`\\[[^\\]]*\\]\\(\\./${escapeRegex(cleanDeleted)}\\.md\\)`, "g"),
@@ -186,11 +184,15 @@ export function removeAssetReferences(deletedSlug: string): {
     new RegExp(`\\[[^\\]]*\\]\\(/${escapeRegex(deletedBaseName)}\\.md\\)`, "g"),
   ];
 
-  allFiles.forEach((absPath) => {
-    if (absPath.endsWith("log.md")) return;
+  const changes: FileChange[] = [];
+
+  for (const relPath of allFiles) {
+    if (relPath === "log") continue;
 
     try {
-      const original = fs.readFileSync(absPath, "utf8");
+      const original = await readFile(relPath);
+      if (!original) continue;
+
       let content = original;
 
       for (const pattern of linkPatterns) {
@@ -201,15 +203,22 @@ export function removeAssetReferences(deletedSlug: string): {
       content = content.replace(/^\s*-\s*\n/gm, "");
 
       if (content !== original) {
-        fs.writeFileSync(absPath, content, "utf8");
-        updatedFiles.push(
-          path.relative(kbDirectory, absPath).replace(/\\/g, "/"),
-        );
+        changes.push({ path: relPath, content });
+        updatedFiles.push(relPath);
       }
     } catch (err) {
-      console.warn("Failed to remove references in file:", absPath, err);
+      console.warn("Failed to remove references in file:", relPath, err);
     }
-  });
+  }
+
+  // Batch commit all changes
+  if (changes.length > 0) {
+    await batchCommit(
+      changes,
+      [],
+      `Remove references to deleted asset: ${deletedSlug}`,
+    );
+  }
 
   return { updatedFiles };
 }
@@ -262,8 +271,8 @@ export async function renameOKFAsset({
       };
     }
 
-    const existingAbs = findAbsolutePath(oldSlug);
-    if (!existingAbs) {
+    const existingPath = await findAbsolutePath(oldSlug);
+    if (!existingPath) {
       return {
         success: false,
         message: `Source asset '${oldSlug}' not found.`,
@@ -273,62 +282,64 @@ export async function renameOKFAsset({
       };
     }
 
-    const collision = findAbsolutePath(newSlug);
-    if (collision && collision !== existingAbs) {
-      const collisionRel = path
-        .relative(kbDirectory, collision)
-        .replace(/\\/g, "/");
+    const collision = await findAbsolutePath(newSlug);
+    if (collision && collision !== existingPath) {
       return {
         success: false,
-        message: `A concept with slug '${newSlug}' already exists at ${collisionRel}.`,
+        message: `A concept with slug '${newSlug}' already exists at ${collision}.`,
         filename: "",
         relPath: "",
         rewrittenFiles: [],
       };
     }
 
-    const raw = fs.readFileSync(existingAbs, "utf8");
+    const raw = await readFile(existingPath);
+    if (!raw) {
+      return {
+        success: false,
+        message: `Source asset '${oldSlug}' not found.`,
+        filename: "",
+        relPath: "",
+        rewrittenFiles: [],
+      };
+    }
+
     const { data, content } = matter(raw);
     const assetType = type || data.type || "Asset";
 
-    let targetFolderDirectory = path.dirname(existingAbs);
+    let targetFolder = existingPath.split("/").slice(0, -1).join("/");
     if (type && type !== data.type) {
       const newNamespace = getCanonicalNamespace(type);
-      targetFolderDirectory = path.join(kbDirectory, newNamespace);
-      if (!fs.existsSync(targetFolderDirectory)) {
-        fs.mkdirSync(targetFolderDirectory, { recursive: true });
-      }
+      targetFolder = newNamespace;
     }
 
-    const newAbsPath = path.join(targetFolderDirectory, `${newSlug}.md`);
-    const newRelPath = path
-      .relative(kbDirectory, newAbsPath)
-      .replace(/\\/g, "/")
-      .replace(/\.md$/, "");
+    const newRelPath = targetFolder
+      ? `${targetFolder}/${newSlug}`
+      : newSlug;
 
     data.type = assetType;
     data.timestamp = new Date().toISOString();
 
     const updatedContent = matter.stringify(content.trim() + "\n", data);
-    fs.writeFileSync(newAbsPath, updatedContent, "utf8");
 
-    if (newAbsPath !== existingAbs) {
-      fs.unlinkSync(existingAbs);
-    }
+    // Delete old file and create new one
+    const deletions = existingPath !== newRelPath ? [existingPath] : [];
+    const changes: FileChange[] = [{ path: newRelPath, content: updatedContent }];
 
-    const oldRelPath = path
-      .relative(kbDirectory, existingAbs)
-      .replace(/\\/g, "/")
-      .replace(/\.md$/, "");
+    await batchCommit(
+      changes,
+      deletions,
+      `Rename: ${oldSlug} → ${newSlug}`,
+    );
 
-    const rewriteRes = rewriteAssetReferences(oldRelPath, newRelPath);
+    const oldRelPath = existingPath;
+
+    const rewriteRes = await rewriteAssetReferences(oldRelPath, newRelPath);
 
     const timestamp = new Date().toISOString();
-    const logPath = path.join(kbDirectory, "log.md");
-    const logEntry = `- [${timestamp}] RENAMED [${oldSlug}] ➔ [${newSlug}] - Updated references in ${rewriteRes.updatedFiles.length} files\n`;
-    if (fs.existsSync(logPath)) {
-      fs.appendFileSync(logPath, logEntry, "utf8");
-    }
+    await appendToLog(
+      `RENAMED [${oldSlug}] → [${newSlug}] - Updated references in ${rewriteRes.updatedFiles.length} files`,
+    );
 
     await rebuildNestedIndexFile();
 
@@ -354,165 +365,59 @@ export async function renameOKFAsset({
  * Crawls nested sub-directories to re-compile subfolder index.md files and master root index.md.
  */
 export async function rebuildNestedIndexFile(): Promise<void> {
-  if (!fs.existsSync(kbDirectory)) {
-    fs.mkdirSync(kbDirectory, { recursive: true });
-    return;
+  const allRelPaths = await listFiles();
+  const assetFiles = allRelPaths.filter(
+    (p) => !p.endsWith("/index") && p !== "index" && p !== "log",
+  );
+
+  // Read all files to get frontmatter
+  const filesWithFrontmatter: Array<{
+    relPath: string;
+    frontmatter: Record<string, any>;
+  }> = [];
+
+  for (const relPath of assetFiles) {
+    try {
+      const raw = await readFile(relPath);
+      if (!raw) continue;
+      const { data } = matter(raw);
+      filesWithFrontmatter.push({ relPath, frontmatter: data });
+    } catch (e) {
+      console.warn("Skipping indexing for file:", relPath, e);
+    }
   }
 
-  const allMarkdownPaths = getAllMarkdownFiles(kbDirectory).filter(
-    (p) => !p.endsWith("index.md") && !p.endsWith("log.md"),
-  );
-
-  const categories: Record<
-    string,
-    Array<{ title: string; relPath: string; description: string; type: string }>
-  > = {};
-
-  const topLevelFolders = new Set<string>();
-
-  allMarkdownPaths.forEach((absPath) => {
-    try {
-      const rawContent = fs.readFileSync(absPath, "utf8");
-      const { data } = matter(rawContent);
-      const typeKey = data.type || "Uncategorized";
-
-      const relativeTargetData = path.relative(kbDirectory, absPath);
-      const cleanRelPath = relativeTargetData
-        .replace(/\\/g, "/")
-        .replace(/\.md$/, "");
-
-      const topFolder = cleanRelPath.split("/")[0];
-      if (topFolder && topFolder !== cleanRelPath) {
-        topLevelFolders.add(topFolder);
-      }
-
-      if (!categories[typeKey]) categories[typeKey] = [];
-      categories[typeKey].push({
-        title: data.title || path.parse(absPath).name,
-        relPath: cleanRelPath,
-        description: data.description || "No descriptive overview available.",
-        type: typeKey,
-      });
-    } catch (e) {
-      console.warn("Skipping indexing for corrupt element:", absPath);
-    }
-  });
-
-  const timestamp = new Date().toISOString();
-
-  // 1. Generate Subfolder Category index.md files for actual physical top-level folders
-  topLevelFolders.forEach((topFolder) => {
-    const targetFolder = path.join(kbDirectory, topFolder);
-    if (!fs.existsSync(targetFolder)) return;
-
-    const folderFiles = allMarkdownPaths.filter((absPath) => {
-      const rel = path.relative(kbDirectory, absPath).replace(/\\/g, "/");
-      return rel.startsWith(`${topFolder}/`);
-    });
-
-    const folderNameFormatted =
-      topFolder.charAt(0).toUpperCase() + topFolder.slice(1);
-
-    let subIndexContent = `---
-type: CategoryIndex
-category: ${folderNameFormatted}
-title: ${folderNameFormatted} Domain Operational Map
-description: Local category index for ${topFolder} domain assets.
-timestamp: ${timestamp}
----
-# ${folderNameFormatted} Domain Operational Map
-
-This index outlines all knowledge nodes registered within the ${topFolder} domain.
-
-`;
-
-    folderFiles.forEach((absPath) => {
-      const raw = fs.readFileSync(absPath, "utf8");
-      const { data } = matter(raw);
-      const relToFolder = path
-        .relative(targetFolder, absPath)
-        .replace(/\\/g, "/");
-      const title = data.title || path.parse(absPath).name;
-      const description =
-        data.description || "No descriptive overview available.";
-      subIndexContent += `* [${title}](./${relToFolder}) - ${description}\n`;
-    });
-
-    fs.writeFileSync(
-      path.join(targetFolder, "index.md"),
-      subIndexContent.trim() + "\n",
-      "utf8",
-    );
-  });
-
-  // 2. Generate Master Root index.md
-  let masterIndexContent = `---
-type: Index
-title: Central Operational Registry Map
-description: Autogenerated progressive disclosure map grouping active supply chain category indexes and node vectors.
-timestamp: ${timestamp}
----
-# Central Operational Registry Map
-
-This master index profiles active framework directory category indexes and registered asset nodes.
-
-## Subfolder Category Indexes
-`;
-
-  Array.from(topLevelFolders)
-    .sort()
-    .forEach((topFolder) => {
-      const folderNameFormatted =
-        topFolder.charAt(0).toUpperCase() + topFolder.slice(1);
-      const count = allMarkdownPaths.filter((p) => {
-        const rel = path.relative(kbDirectory, p).replace(/\\/g, "/");
-        return rel.startsWith(`${topFolder}/`);
-      }).length;
-      masterIndexContent += `* [${folderNameFormatted} Category Index](./${topFolder}/index.md) - Subfolder operational map containing ${count} asset(s)\n`;
-    });
-
-  masterIndexContent += `\n## Registered Asset Nodes\n\n`;
-
-  Object.keys(categories)
-    .sort()
-    .forEach((category) => {
-      masterIndexContent += `### ${category}\n`;
-      categories[category]
-        .sort((a, b) => a.title.localeCompare(b.title))
-        .forEach((item) => {
-          masterIndexContent += `* [${item.title}](./${item.relPath}.md) - ${item.description}\n`;
-        });
-      masterIndexContent += `\n`;
-    });
-
-  fs.writeFileSync(
-    path.join(kbDirectory, "index.md"),
-    masterIndexContent.trim() + "\n",
-    "utf8",
-  );
+  await rebuildAllIndexes(filesWithFrontmatter);
 }
 
 /**
  * Checks if any markdown file on disk is newer than index.md. If so, runs an auto-rebuild.
  */
 export async function syncIndexIfStale(): Promise<boolean> {
-  const indexPath = path.join(kbDirectory, "index.md");
-  if (!fs.existsSync(indexPath)) {
+  const indexContent = await readFile("index");
+  if (!indexContent) {
     await rebuildNestedIndexFile();
     return true;
   }
 
   try {
-    const indexMTime = fs.statSync(indexPath).mtimeMs;
-    const allFiles = getAllMarkdownFiles(kbDirectory);
+    // Get the index file's last commit date
+    const { getFileHistory } = await import("@/lib/github/file-store");
+    const history = await getFileHistory("index");
+    const indexDate = history.length > 0 ? new Date(history[0].date).getTime() : 0;
 
-    for (const filePath of allFiles) {
-      if (filePath.endsWith("log.md") || filePath.endsWith("index.md"))
-        continue;
-      const fileMTime = fs.statSync(filePath).mtimeMs;
-      if (fileMTime > indexMTime) {
-        await rebuildNestedIndexFile();
-        return true;
+    const allFiles = await listFiles();
+
+    for (const relPath of allFiles) {
+      if (relPath === "log" || relPath.endsWith("/index")) continue;
+
+      const fileHistory = await getFileHistory(relPath);
+      if (fileHistory.length > 0) {
+        const fileDate = new Date(fileHistory[0].date).getTime();
+        if (fileDate > indexDate) {
+          await rebuildNestedIndexFile();
+          return true;
+        }
       }
     }
   } catch (err) {
@@ -575,54 +480,39 @@ export async function writeOKFMarkdownFile({
     }
 
     // Check if the file already exists anywhere in the repository
-    const existingAbs = findAbsolutePath(humanFriendlySlug);
-    let targetFolderDirectory: string;
+    const existingPath = await findAbsolutePath(humanFriendlySlug);
+    let targetFolder: string;
     let namespaceFolder: string;
 
-    if (existingAbs) {
-      targetFolderDirectory = path.dirname(existingAbs);
-      namespaceFolder = path
-        .relative(kbDirectory, targetFolderDirectory)
-        .replace(/\\/g, "/");
+    if (existingPath) {
+      const parts = existingPath.split("/");
+      targetFolder = parts.slice(0, -1).join("/");
+      namespaceFolder = targetFolder;
     } else {
       if (mode === "create") {
-        const collision = findAbsolutePath(humanFriendlySlug);
+        const collision = await findAbsolutePath(humanFriendlySlug);
         if (collision) {
-          const collisionRel = path
-            .relative(kbDirectory, collision)
-            .replace(/\\/g, "/");
           return {
             success: false,
-            message: `A concept with slug '${humanFriendlySlug}' already exists at ${collisionRel}.`,
+            message: `A concept with slug '${humanFriendlySlug}' already exists at ${collision}.`,
             filename: humanFriendlySlug,
             relPath: "",
           };
         }
       }
       namespaceFolder = getCanonicalNamespace(type);
-      targetFolderDirectory = path.join(kbDirectory, namespaceFolder);
+      targetFolder = namespaceFolder;
     }
 
-    if (mode === "create" && existingAbs) {
-      const collisionRel = path
-        .relative(kbDirectory, existingAbs)
-        .replace(/\\/g, "/");
+    if (mode === "create" && existingPath) {
       return {
         success: false,
-        message: `A concept with slug '${humanFriendlySlug}' already exists at ${collisionRel}.`,
+        message: `A concept with slug '${humanFriendlySlug}' already exists at ${existingPath}.`,
         filename: humanFriendlySlug,
         relPath: "",
       };
     }
 
-    if (!fs.existsSync(targetFolderDirectory)) {
-      fs.mkdirSync(targetFolderDirectory, { recursive: true });
-    }
-
-    const fullPath = path.join(
-      targetFolderDirectory,
-      `${humanFriendlySlug}.md`,
-    );
     const timestamp = new Date().toISOString();
     const cleanTags = (tags || []).map((t) => t.trim().toLowerCase());
 
@@ -643,25 +533,20 @@ timestamp: ${timestamp}
 
 ${cleanBody}
 `;
-    fs.writeFileSync(fullPath, okfContent, "utf8");
 
     const targetRelPath = namespaceFolder
       ? `${namespaceFolder}/${humanFriendlySlug}`
       : humanFriendlySlug;
 
-    // Log the transaction in the root log
-    const logPath = path.join(kbDirectory, "log.md");
-    const logEntry = `- [${timestamp}] REGISTERED [${title}](./${targetRelPath}.md) - Namespace: ${namespaceFolder}\n`;
+    await writeFile(
+      targetRelPath,
+      okfContent,
+      `${mode === "create" ? "Create" : "Update"} asset: ${title}`,
+    );
 
-    if (!fs.existsSync(logPath)) {
-      fs.writeFileSync(
-        logPath,
-        `# Knowledge Base Evolution Log\n\n` + logEntry,
-        "utf8",
-      );
-    } else {
-      fs.appendFileSync(logPath, logEntry, "utf8");
-    }
+    await appendToLog(
+      `REGISTERED [${title}](./${targetRelPath}.md) - Namespace: ${namespaceFolder}`,
+    );
 
     await rebuildNestedIndexFile();
 
@@ -674,7 +559,7 @@ ${cleanBody}
   } catch (error: any) {
     return {
       success: false,
-      message: `Filesystem failure: ${error.message}`,
+      message: `Storage failure: ${error.message}`,
       filename,
       relPath: "",
     };
@@ -699,7 +584,7 @@ export async function patchOKFMarkdownFile({
   relPath?: string;
 }> {
   try {
-    const absPath = findAbsolutePath(filename);
+    const absPath = await findAbsolutePath(filename);
     if (!absPath) {
       return {
         success: false,
@@ -707,7 +592,14 @@ export async function patchOKFMarkdownFile({
       };
     }
 
-    const raw = fs.readFileSync(absPath, "utf8");
+    const raw = await readFile(absPath);
+    if (!raw) {
+      return {
+        success: false,
+        message: `Asset '${filename}' not located in knowledge repository.`,
+      };
+    }
+
     const { data, content } = matter(raw);
 
     // Update frontmatter fields if provided
@@ -751,27 +643,19 @@ export async function patchOKFMarkdownFile({
       }
     }
 
-    const relPath = path
-      .relative(kbDirectory, absPath)
-      .replace(/\\/g, "/")
-      .replace(/\.md$/, "");
+    const newContent = matter.stringify(newBody.trim() + "\n", data);
+    await writeFile(absPath, newContent, `Patch asset: ${data.title || filename}`);
 
-    const newFrontmatterStr = matter.stringify(newBody.trim() + "\n", data);
-    fs.writeFileSync(absPath, newFrontmatterStr, "utf8");
-
-    const timestamp = new Date().toISOString();
-    const logPath = path.join(kbDirectory, "log.md");
-    const logEntry = `- [${timestamp}] PATCHED [${data.title || filename}](./${relPath}.md) - Non-destructive section/metadata update\n`;
-    if (fs.existsSync(logPath)) {
-      fs.appendFileSync(logPath, logEntry, "utf8");
-    }
+    await appendToLog(
+      `PATCHED [${data.title || filename}](./${absPath}.md) - Non-destructive section/metadata update`,
+    );
 
     await rebuildNestedIndexFile();
 
     return {
       success: true,
-      message: `Successfully patched asset [${relPath}].`,
-      relPath,
+      message: `Successfully patched asset [${absPath}].`,
+      relPath: absPath,
     };
   } catch (err: any) {
     return {
@@ -818,23 +702,20 @@ export async function mergeOKFMarkdownFiles({
 
     // 2. For each source file, rewrite incoming references to point to targetSlug, then delete source
     for (const src of sourceFilenames) {
-      const srcSlug = path.parse(src).name.toLowerCase();
+      const srcSlug = src.split("/").pop()?.toLowerCase() || src.toLowerCase();
       if (srcSlug === targetSlug) continue;
 
       // Rewrite references across repository
-      const rewriteRes = rewriteAssetReferences(srcSlug, targetSlug);
+      const rewriteRes = await rewriteAssetReferences(srcSlug, targetSlug);
       allRewrittenFiles.push(...rewriteRes.updatedFiles);
 
       // Decommission source asset
       await deleteOKFMarkdownFile(srcSlug);
     }
 
-    const timestamp = new Date().toISOString();
-    const logPath = path.join(kbDirectory, "log.md");
-    const logEntry = `- [${timestamp}] CONSOLIDATED [${sourceFilenames.join(", ")}] ➔ [${title}](./${writeRes.relPath}.md) - Rewrote references in ${allRewrittenFiles.length} files\n`;
-    if (fs.existsSync(logPath)) {
-      fs.appendFileSync(logPath, logEntry, "utf8");
-    }
+    await appendToLog(
+      `CONSOLIDATED [${sourceFilenames.join(", ")}] → [${title}](./${writeRes.relPath}.md) - Rewrote references in ${allRewrittenFiles.length} files`,
+    );
 
     await rebuildNestedIndexFile();
 
@@ -864,38 +745,24 @@ export async function deleteOKFMarkdownFile(
   try {
     const slug = filename.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 
-    function findAndRemove(dir: string): boolean {
-      const files = fs.readdirSync(dir);
-      for (const file of files) {
-        const fullP = path.join(dir, file);
-        if (fs.statSync(fullP).isDirectory()) {
-          if (findAndRemove(fullP)) return true;
-        } else if (file === `${slug}.md`) {
-          fs.unlinkSync(fullP);
-          return true;
-        }
-      }
-      return false;
-    }
-
-    const foundAndDeleted = findAndRemove(kbDirectory);
-    if (!foundAndDeleted)
+    const foundPath = await findAbsolutePath(slug);
+    if (!foundPath) {
       return {
         success: false,
         message: "Target file not located in nested structure.",
       };
+    }
+
+    await deleteFile(foundPath, `Decommission asset: ${slug}.md`);
 
     let updatedFiles: string[] = [];
     if (options.removeReferences) {
-      const removeRes = removeAssetReferences(slug);
+      const removeRes = await removeAssetReferences(slug);
       updatedFiles = removeRes.updatedFiles;
     }
 
-    const timestamp = new Date().toISOString();
-    fs.appendFileSync(
-      path.join(kbDirectory, "log.md"),
-      `- [${timestamp}] DECOMMISSIONED [${slug}].md from subfolders.${updatedFiles.length > 0 ? ` Removed references in ${updatedFiles.length} file(s).` : ""}\n`,
-      "utf8",
+    await appendToLog(
+      `DECOMMISSIONED [${slug}].md from subfolders.${updatedFiles.length > 0 ? ` Removed references in ${updatedFiles.length} file(s).` : ""}`,
     );
 
     await rebuildNestedIndexFile();
@@ -972,54 +839,38 @@ export async function saveRawOKFMarkdownFile({
       }
     }
 
-    const existingAbs = findAbsolutePath(humanFriendlySlug);
-    let targetFolderDirectory: string;
+    const existingPath = await findAbsolutePath(humanFriendlySlug);
+    let targetFolder: string;
     let namespaceFolder: string;
 
-    if (existingAbs) {
-      targetFolderDirectory = path.dirname(existingAbs);
-      namespaceFolder = path
-        .relative(kbDirectory, targetFolderDirectory)
-        .replace(/\\/g, "/");
+    if (existingPath) {
+      const parts = existingPath.split("/");
+      targetFolder = parts.slice(0, -1).join("/");
+      namespaceFolder = targetFolder;
     } else {
       if (mode === "create") {
-        const collision = findAbsolutePath(humanFriendlySlug);
+        const collision = await findAbsolutePath(humanFriendlySlug);
         if (collision) {
-          const collisionRel = path
-            .relative(kbDirectory, collision)
-            .replace(/\\/g, "/");
           return {
             success: false,
-            message: `A concept with slug '${humanFriendlySlug}' already exists at ${collisionRel}.`,
+            message: `A concept with slug '${humanFriendlySlug}' already exists at ${collision}.`,
             filename: humanFriendlySlug,
             relPath: "",
           };
         }
       }
       namespaceFolder = getCanonicalNamespace(type, relPath);
-      targetFolderDirectory = path.join(kbDirectory, namespaceFolder);
+      targetFolder = namespaceFolder;
     }
 
-    if (mode === "create" && existingAbs) {
-      const collisionRel = path
-        .relative(kbDirectory, existingAbs)
-        .replace(/\\/g, "/");
+    if (mode === "create" && existingPath) {
       return {
         success: false,
-        message: `A concept with slug '${humanFriendlySlug}' already exists at ${collisionRel}.`,
+        message: `A concept with slug '${humanFriendlySlug}' already exists at ${existingPath}.`,
         filename: humanFriendlySlug,
         relPath: "",
       };
     }
-
-    if (!fs.existsSync(targetFolderDirectory)) {
-      fs.mkdirSync(targetFolderDirectory, { recursive: true });
-    }
-
-    const fullPath = path.join(
-      targetFolderDirectory,
-      `${humanFriendlySlug}.md`,
-    );
 
     // Ensure timestamp is present or updated
     parsedData.timestamp = parsedData.timestamp || new Date().toISOString();
@@ -1031,25 +882,20 @@ export async function saveRawOKFMarkdownFile({
     const finalBody = `# ${title}\n\n${cleanBody}\n`;
 
     const contentToWrite = matter.stringify(finalBody, parsedData);
-    fs.writeFileSync(fullPath, contentToWrite, "utf8");
 
     const targetRelPath = namespaceFolder
       ? `${namespaceFolder}/${humanFriendlySlug}`
       : humanFriendlySlug;
 
-    const timestamp = new Date().toISOString();
-    const logPath = path.join(kbDirectory, "log.md");
-    const logEntry = `- [${timestamp}] UPDATED [${title}](./${targetRelPath}.md) - Direct Editor Write\n`;
+    await writeFile(
+      targetRelPath,
+      contentToWrite,
+      `${mode === "create" ? "Create" : "Update"} asset: ${title}`,
+    );
 
-    if (!fs.existsSync(logPath)) {
-      fs.writeFileSync(
-        logPath,
-        `# Knowledge Base Evolution Log\n\n` + logEntry,
-        "utf8",
-      );
-    } else {
-      fs.appendFileSync(logPath, logEntry, "utf8");
-    }
+    await appendToLog(
+      `UPDATED [${title}](./${targetRelPath}.md) - Direct Editor Write`,
+    );
 
     await rebuildNestedIndexFile();
 

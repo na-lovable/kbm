@@ -1,8 +1,5 @@
-import fs from "fs";
-import path from "path";
 import matter from "gray-matter";
-
-const kbDirectory = path.join(process.cwd(), "knowledge-base");
+import { listFiles, readFile } from "@/lib/github/file-store";
 
 export interface LintIssue {
   file: string;
@@ -22,51 +19,37 @@ export interface LintReport {
   issues: LintIssue[];
 }
 
-function getAllMarkdownFiles(dir: string, fileList: string[] = []): string[] {
-  if (!fs.existsSync(dir)) return fileList;
-  const files = fs.readdirSync(dir);
-  files.forEach((file) => {
-    const p = path.join(dir, file);
-    if (fs.statSync(p).isDirectory()) {
-      fileList = getAllMarkdownFiles(p, fileList);
-    } else if (file.endsWith(".md")) {
-      fileList.push(p);
-    }
-  });
-  return fileList;
-}
-
 /**
  * Knowledge Base Integrity & Schema Linter Core Engine
  */
 export async function lintKnowledgeBase(): Promise<LintReport> {
   const issues: LintIssue[] = [];
-  const allFiles = getAllMarkdownFiles(kbDirectory);
+  const allFiles = await listFiles();
 
   // Map of lowercase slugs -> relative path
   const slugMap = new Map<string, string>();
-  allFiles.forEach((absPath) => {
-    const slug = path.parse(absPath).name.toLowerCase();
-    const rel = path.relative(kbDirectory, absPath).replace(/\\/g, "/");
-    slugMap.set(slug, rel);
+  allFiles.forEach((relPath) => {
+    const slug = relPath.split("/").pop()?.toLowerCase() || relPath;
+    slugMap.set(slug, relPath);
   });
 
   const nodeContentMap = new Map<string, { raw: string; data: any }>();
 
-  allFiles.forEach((absPath) => {
-    const relPath = path.relative(kbDirectory, absPath).replace(/\\/g, "/");
-    const filename = path.parse(absPath).name;
+  for (const relPath of allFiles) {
+    const filename = relPath.split("/").pop() || relPath;
 
     // Skip root log file
-    if (relPath === "log.md") return;
+    if (relPath === "log") continue;
 
     try {
-      const raw = fs.readFileSync(absPath, "utf8");
+      const raw = await readFile(relPath);
+      if (!raw) continue;
+
       const { data, content } = matter(raw);
       nodeContentMap.set(filename, { raw, data });
 
       // Rule 1: Frontmatter Schema Validation (OKF Compliance)
-      if (filename !== "index" && !relPath.endsWith("/index.md")) {
+      if (filename !== "index" && !relPath.endsWith("/index")) {
         if (!data.type) {
           issues.push({
             file: relPath,
@@ -116,7 +99,7 @@ export async function lintKnowledgeBase(): Promise<LintReport> {
       let match;
       while ((match = linkRegex.exec(content)) !== null) {
         const targetHref = match[2];
-        const targetSlug = path.parse(targetHref).name.toLowerCase();
+        const targetSlug = targetHref.split("/").pop()?.replace(/\.md$/, "").toLowerCase() || "";
 
         if (!slugMap.has(targetSlug)) {
           issues.push({
@@ -135,19 +118,18 @@ export async function lintKnowledgeBase(): Promise<LintReport> {
         message: `Failed to parse YAML/Markdown content: ${err.message}`,
       });
     }
-  });
+  }
 
   // Rule 4: Orphan Node Detection (0 incoming and 0 outgoing references)
-  allFiles.forEach((absPath) => {
-    const filename = path.parse(absPath).name;
-    const relPath = path.relative(kbDirectory, absPath).replace(/\\/g, "/");
+  for (const relPath of allFiles) {
+    const filename = relPath.split("/").pop() || relPath;
 
-    if (filename === "index" || relPath.endsWith("/index.md") || relPath === "log.md") {
-      return;
+    if (filename === "index" || relPath.endsWith("/index") || relPath === "log") {
+      continue;
     }
 
     const current = nodeContentMap.get(filename);
-    if (!current) return;
+    if (!current) continue;
 
     // Check outgoing
     const linkRegex = /\[([^\]]+)\]\(([^)]+\.md)\)/g;
@@ -175,13 +157,13 @@ export async function lintKnowledgeBase(): Promise<LintReport> {
         message: `Orphan asset node: '${filename}' has no incoming or outgoing graph links.`,
       });
     }
-  });
+  }
 
   const errors = issues.filter((i) => i.level === "ERROR").length;
   const warnings = issues.filter((i) => i.level === "WARNING").length;
 
   const totalAssetNodes = allFiles.filter(
-    (f) => !f.endsWith("index.md") && !f.endsWith("log.md")
+    (f) => !f.endsWith("/index") && f !== "log",
   ).length;
 
   // Health Score Calculation: 100 - (20 * errors + 5 * warnings) / total

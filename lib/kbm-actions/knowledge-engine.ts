@@ -1,5 +1,3 @@
-import fs from "fs";
-import path from "path";
 import matter from "gray-matter";
 import {
   KnowledgeNode,
@@ -7,6 +5,11 @@ import {
   GraphQueryResult,
   ConnectedNodeSummary,
 } from "@/types/knowledge";
+import { listFiles, readFile, writeFile } from "@/lib/github/file-store";
+import {
+  rebuildAllIndexes,
+  appendToLog,
+} from "@/lib/github/index-manager";
 import {
   getAllMarkdownFiles,
   findAbsolutePath,
@@ -14,29 +17,21 @@ import {
   rebuildNestedIndexFile,
 } from "./knowledge-writer";
 
-const kbDirectory = path.join(process.cwd(), "knowledge-base");
-const indexPath = path.join(kbDirectory, "index.md");
-
 /**
  * LAZY LOADING: Reads and parses index.md or falls back to a deep recursive directory scan.
  * Automatically triggers background reconciliation if any file on disk is newer than index.md.
  */
 export async function getInMemoryGraph(): Promise<KnowledgeNode[]> {
-  if (!fs.existsSync(kbDirectory)) {
-    fs.mkdirSync(kbDirectory, { recursive: true });
-    return [];
-  }
-
   // Ensure index is in sync with latest disk changes
   await syncIndexIfStale();
 
-  if (!fs.existsSync(indexPath)) {
+  const indexContent = await readFile("index");
+  if (!indexContent) {
     return runRecursiveDirectoryScan();
   }
 
   try {
-    const indexContents = fs.readFileSync(indexPath, "utf8");
-    const { content } = matter(indexContents);
+    const { content } = matter(indexContent);
 
     const nodes: KnowledgeNode[] = [];
 
@@ -46,7 +41,7 @@ export async function getInMemoryGraph(): Promise<KnowledgeNode[]> {
 
     while ((match = indexLineRegex.exec(content)) !== null) {
       const [_, title, relPath, description] = match;
-      const filename = path.parse(relPath).name;
+      const filename = relPath.split("/").pop() || relPath;
 
       // Filter out subfolder category index files
       if (filename === "index" || relPath.endsWith("/index")) {
@@ -94,21 +89,18 @@ export async function queryGraphById(
   try {
     await syncIndexIfStale();
 
-    const matchedAbsolutePath = findAbsolutePath(filenameWithoutExt);
-    if (!matchedAbsolutePath) return null;
+    const matchedPath = await findAbsolutePath(filenameWithoutExt);
+    if (!matchedPath) return null;
 
-    const fileContents = fs.readFileSync(matchedAbsolutePath, "utf8");
+    const fileContents = await readFile(matchedPath);
+    if (!fileContents) return null;
+
     const { data, content } = matter(fileContents);
     const metadata = data as OKFFrontMatter;
 
-    const relativeTargetData = path.relative(kbDirectory, matchedAbsolutePath);
-    const cleanRelPath = relativeTargetData
-      .replace(/\\/g, "/")
-      .replace(/\.md$/, "");
-
     const targetNode: KnowledgeNode = {
-      filename: path.parse(matchedAbsolutePath).name,
-      relPath: cleanRelPath,
+      filename: matchedPath.split("/").pop() || matchedPath,
+      relPath: matchedPath,
       type: metadata.type || "Unknown",
       metadata,
       rawContent: content.trim(),
@@ -129,21 +121,23 @@ export async function queryGraphById(
     });
 
     // 2. Check incoming relative path references (other nodes point to target node)
-    const allMarkdownFiles = getAllMarkdownFiles(kbDirectory);
+    const allFiles = await listFiles();
     const connectedNodesMap = new Map<string, ConnectedNodeSummary>();
 
-    for (const absPath of allMarkdownFiles) {
-      const fileSlug = path.parse(absPath).name;
+    for (const relPath of allFiles) {
+      const fileSlug = relPath.split("/").pop() || relPath;
       if (
         fileSlug === targetNode.filename ||
-        absPath.endsWith("index.md") ||
-        absPath.endsWith("log.md")
+        relPath.endsWith("/index") ||
+        relPath === "log"
       ) {
         continue;
       }
 
       try {
-        const raw = fs.readFileSync(absPath, "utf8");
+        const raw = await readFile(relPath);
+        if (!raw) continue;
+
         const isPointingToTarget =
           raw.includes(`./${targetNode.relPath}.md`) ||
           raw.includes(`/${targetNode.relPath}.md`) ||
@@ -153,14 +147,10 @@ export async function queryGraphById(
 
         if (isPointingToTarget) {
           const { data: otherData } = matter(raw);
-          const otherRelPath = path
-            .relative(kbDirectory, absPath)
-            .replace(/\\/g, "/")
-            .replace(/\.md$/, "");
 
           connectedNodesMap.set(fileSlug, {
             filename: fileSlug,
-            relPath: otherRelPath,
+            relPath: relPath,
             type: otherData.type || "Unknown",
             title: otherData.title || fileSlug,
           });
@@ -190,19 +180,17 @@ export async function readSingleFileRaw(
   filename: string,
 ): Promise<string | null> {
   try {
-    const matchedPath = findAbsolutePath(filename);
+    const matchedPath = await findAbsolutePath(filename);
     if (!matchedPath) return null;
 
-    const fileContent = fs.readFileSync(matchedPath, "utf8");
+    const fileContent = await readFile(matchedPath);
+    if (!fileContent) return null;
 
     // Chronological read tracker updates inside root logs
     const timestamp = new Date().toISOString();
-    const logPath = path.join(kbDirectory, "log.md");
-    const logEntry = `- [${timestamp}] READ [${filename}] - Deep nested content queried autonomously by agent.\n`;
+    const logEntry = `READ [${filename}] - Deep nested content queried autonomously by agent.`;
 
-    if (fs.existsSync(logPath)) {
-      fs.appendFileSync(logPath, logEntry, "utf8");
-    }
+    await appendToLog(logEntry);
 
     return fileContent;
   } catch {
@@ -210,26 +198,32 @@ export async function readSingleFileRaw(
   }
 }
 
-function runRecursiveDirectoryScan(): KnowledgeNode[] {
-  const allAbsolutePaths = getAllMarkdownFiles(kbDirectory);
-  const targetFiles = allAbsolutePaths.filter(
-    (p) => !p.endsWith("index.md") && !p.endsWith("log.md"),
+async function runRecursiveDirectoryScan(): Promise<KnowledgeNode[]> {
+  const allRelPaths = await listFiles();
+  const targetFiles = allRelPaths.filter(
+    (p) => !p.endsWith("/index") && p !== "index" && p !== "log",
   );
 
-  return targetFiles.map((absolutePath) => {
-    const fileContents = fs.readFileSync(absolutePath, "utf8");
-    const { data } = matter(fileContents);
-    const relativeTargetData = path.relative(kbDirectory, absolutePath);
-    const cleanRelPath = relativeTargetData
-      .replace(/\\/g, "/")
-      .replace(/\.md$/, "");
+  const nodes: KnowledgeNode[] = [];
 
-    return {
-      filename: path.parse(absolutePath).name,
-      relPath: cleanRelPath,
-      type: (data as OKFFrontMatter).type || "Unknown",
-      metadata: data as OKFFrontMatter,
-      rawContent: "",
-    };
-  });
+  for (const relPath of targetFiles) {
+    try {
+      const fileContents = await readFile(relPath);
+      if (!fileContents) continue;
+
+      const { data } = matter(fileContents);
+
+      nodes.push({
+        filename: relPath.split("/").pop() || relPath,
+        relPath: relPath,
+        type: (data as OKFFrontMatter).type || "Unknown",
+        metadata: data as OKFFrontMatter,
+        rawContent: "",
+      });
+    } catch {
+      // Skip unreadable files
+    }
+  }
+
+  return nodes;
 }
