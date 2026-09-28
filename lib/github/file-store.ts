@@ -1,11 +1,11 @@
-import "@/lib/env";
+import env from "@/lib/env";
 import { Octokit } from "@octokit/rest";
 import matter from "gray-matter";
 
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
-const OWNER = process.env.GITHUB_REPO_OWNER!;
-const REPO = process.env.GITHUB_REPO_NAME!;
-const BRANCH = process.env.GITHUB_REPO_BRANCH || "main";
+const OWNER = env.GITHUB_REPO_OWNER;
+const REPO = env.GITHUB_REPO_NAME;
+const BRANCH = env.GITHUB_REPO_BRANCH;
 
 // ─── Types ───────────────────────────────────────────
 
