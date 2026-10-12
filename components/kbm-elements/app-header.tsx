@@ -4,11 +4,14 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   FileMagnifyingGlassIcon,
+  GithubLogoIcon,
   NetworkIcon,
   ShieldCheck,
   ShieldCheckIcon,
+  SignOutIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react";
+import { authClient } from "@/lib/auth-client";
 
 interface AppHeaderProps {
   error: string | null;
@@ -25,6 +28,9 @@ export function AppHeader({
   onRunLinter,
   onSync,
 }: AppHeaderProps) {
+  const { useSession } = authClient;
+  const { data: session, isPending, refetch } = useSession();
+
   return (
     <header className="h-10 shrink-0 border-b border-border flex items-center justify-between px-2.5 sm:px-3 gap-2">
       <div className="flex items-center gap-2 min-w-0">
@@ -69,6 +75,41 @@ export function AppHeader({
             {isSyncing ? "Syncing…" : "Sync"}
           </span>
         </Button>
+        {isPending ? (
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground" />
+        ) : !session ? (
+          <Button
+            onClick={async () => {
+              await authClient.signIn.social({ provider: "github" });
+              refetch();
+            }}
+            size="icon-sm"
+            className="shrink-0 md:w-auto md:px-2.5 md:gap-1.5 font-semibold"
+            title="Connect GitHub"
+          >
+            <GithubLogoIcon className="h-3.5 w-3.5 shrink-0" />
+            <span className="hidden md:inline text-xs">Connect GitHub</span>
+          </Button>
+        ) : (
+          <div className="flex items-center gap-1.5">
+            <GithubLogoIcon className="h-3.5 w-3.5 shrink-0" />
+            <span className="hidden md:inline text-xs text-muted-foreground max-w-25 truncate">
+              {session.user.name?.split(" ")[0] || session.user.email}
+            </span>
+            <Button
+              onClick={async () => {
+                await authClient.signOut();
+                refetch();
+              }}
+              size="icon-sm"
+              variant="ghost"
+              className="shrink-0"
+              title="Sign out"
+            >
+              <SignOutIcon className="h-3.5 w-3.5 shrink-0" />
+            </Button>
+          </div>
+        )}
       </div>
     </header>
   );

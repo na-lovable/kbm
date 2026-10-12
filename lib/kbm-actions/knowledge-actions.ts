@@ -1,13 +1,7 @@
 "use server";
 
-import {
-  getInMemoryGraph,
-  queryGraphById,
-} from "@/lib/kbm-actions/knowledge-engine";
-import {
-  lintKnowledgeBase,
-  LintReport,
-} from "@/lib/kbm-actions/knowledge-linter";
+import { getInMemoryGraph, queryGraphById } from "@/lib/kbm-actions/knowledge-engine";
+import { lintKnowledgeBase, LintReport } from "@/lib/kbm-actions/knowledge-linter";
 import {
   rebuildNestedIndexFile,
   writeOKFMarkdownFile,
@@ -27,52 +21,57 @@ import {
   DeleteOKFInput,
   MergeOKF,
 } from "@/types/knowledge";
+import { runWithUserGitHub } from "@/lib/github/run-with-user";
 
 export async function handleFetchGraph(): Promise<KnowledgeNode[]> {
-  return await getInMemoryGraph();
+  return runWithUserGitHub(() => getInMemoryGraph());
 }
 
 export async function handleQueryNode(
   filename: string,
 ): Promise<GraphQueryResult | null> {
-  return await queryGraphById(filename);
+  return runWithUserGitHub(() => queryGraphById(filename));
 }
 
 export async function handleLintKnowledgeBase(): Promise<LintReport> {
-  return await lintKnowledgeBase();
+  return runWithUserGitHub(() => lintKnowledgeBase());
 }
 
 export async function handleReconcileKnowledgeBase(): Promise<LintReport> {
-  await rebuildNestedIndexFile();
-  return await lintKnowledgeBase();
+  return runWithUserGitHub(async () => {
+    await rebuildNestedIndexFile();
+    return await lintKnowledgeBase();
+  });
 }
 
 export async function handleSaveOKFAsset(
   data: WriteOKF,
 ): Promise<SaveOKFResult> {
-  return await writeOKFMarkdownFile(data);
+  return runWithUserGitHub(() => writeOKFMarkdownFile(data));
 }
 
 export async function handleSaveRawOKFFile(
   data: SaveRawOKFInput,
 ): Promise<SaveOKFResult> {
-  return await saveRawOKFMarkdownFile(data);
+  return runWithUserGitHub(() => saveRawOKFMarkdownFile(data));
 }
 
 export async function handleRenameOKFAsset(
   data: RenameOKFInput,
 ): Promise<RenameOKFResult> {
-  return await renameOKFAsset(data);
+  return runWithUserGitHub(() => renameOKFAsset(data));
 }
 
 export async function handleDeleteOKFAsset(
   data: DeleteOKFInput | string,
 ): Promise<{ success: boolean; message: string; updatedFiles?: string[] }> {
-  if (typeof data === "string") {
-    return await deleteOKFMarkdownFile(data);
-  }
-  return await deleteOKFMarkdownFile(data.filename, {
-    removeReferences: data.removeReferences,
+  return runWithUserGitHub(async () => {
+    if (typeof data === "string") {
+      return await deleteOKFMarkdownFile(data);
+    }
+    return await deleteOKFMarkdownFile(data.filename, {
+      removeReferences: data.removeReferences,
+    });
   });
 }
 
@@ -82,5 +81,5 @@ export async function handleMergeOKFAssets(data: MergeOKF): Promise<{
   targetRelPath: string;
   rewrittenFiles: string[];
 }> {
-  return await mergeOKFMarkdownFiles(data);
+  return runWithUserGitHub(() => mergeOKFMarkdownFiles(data));
 }

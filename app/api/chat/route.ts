@@ -15,32 +15,34 @@ import { mergeOKFAssets } from "@/lib/tools/merge-OKF-assets";
 import { reconcileOKFBase } from "@/lib/tools/reconcile-OKF-base";
 import { getInMemoryGraph } from "@/lib/kbm-actions/knowledge-engine";
 import { getCanonicalNamespace } from "@/lib/kbm-actions/knowledge-writer";
+import { runWithUserGitHub } from "@/lib/github/run-with-user";
 
 export async function POST(req: Request) {
   try {
     const { messages }: { messages: UIMessage[] } = await req.json();
 
-    // 1. Gather live OKF markdown data context
-    const summaryNodes = await getInMemoryGraph();
+    return await runWithUserGitHub(async () => {
+      // 1. Gather live OKF markdown data context
+      const summaryNodes = await getInMemoryGraph();
 
-    // Collect distinct category namespaces
-    const categoriesSet = new Set(summaryNodes.map((node) => node.type));
-    const subfolderIndexesList = Array.from(categoriesSet)
-      .map(
-        (type) =>
-          `- Subfolder Category Index: "${getCanonicalNamespace(type)}/index" (${type} Category Operational Map)`,
-      )
-      .join("\n");
+      // Collect distinct category namespaces
+      const categoriesSet = new Set(summaryNodes.map((node) => node.type));
+      const subfolderIndexesList = Array.from(categoriesSet)
+        .map(
+          (type) =>
+            `- Subfolder Category Index: "${getCanonicalNamespace(type)}/index" (${type} Category Operational Map)`,
+        )
+        .join("\n");
 
-    const directoryIndexOutline = summaryNodes
-      .map(
-        (node) =>
-          `- Path: "${node.relPath}" (Filename: "${node.filename}") | Type: ${node.type} | Title: "${node.metadata.title}" | Summary: ${node.metadata.description}`,
-      )
-      .join("\n");
+      const directoryIndexOutline = summaryNodes
+        .map(
+          (node) =>
+            `- Path: "${node.relPath}" (Filename: "${node.filename}") | Type: ${node.type} | Title: "${node.metadata.title}" | Summary: ${node.metadata.description}`,
+        )
+        .join("\n");
 
-    // 2. Set strict progressive disclosure & living organizational brain operational rules
-    const systemPrompt = `
+      // 2. Set strict progressive disclosure & living organizational brain operational rules
+      const systemPrompt = `
 You are the Living Organizational Knowledge Brain & Advisor for operations, engineering, and logistics.
 Your institutional memory is maintained as human-friendly Google OKF (Open Knowledge Format) markdown files with frontmatter and bidirectional markdown links.
 
@@ -89,25 +91,26 @@ CORE REASONING & KNOWLEDGE MANAGEMENT PROTOCOLS:
 Keep answers concise, direct, grounded in the files you read, and maintain the integrity of the living knowledge base.
 `;
 
-    // 3. Modern Type-Safe Vercel AI SDK Stream Core Configuration
-    const result = streamText({
-      model: chatModel,
-      system: systemPrompt,
-      messages: await convertToModelMessages(messages),
-      tools: {
-        saveOKFAsset,
-        deleteOKFAsset,
-        readOKFAsset,
-        patchOKFAsset,
-        mergeOKFAssets,
-        reconcileOKFBase,
-      },
-      stopWhen: isStepCount(10),
-    });
+      // 3. Modern Type-Safe Vercel AI SDK Stream Core Configuration
+      const result = streamText({
+        model: chatModel,
+        system: systemPrompt,
+        messages: await convertToModelMessages(messages),
+        tools: {
+          saveOKFAsset,
+          deleteOKFAsset,
+          readOKFAsset,
+          patchOKFAsset,
+          mergeOKFAssets,
+          reconcileOKFBase,
+        },
+        stopWhen: isStepCount(10),
+      });
 
-    // 4. Return clean, standard-compliant response using standalone helper
-    return createUIMessageStreamResponse({
-      stream: toUIMessageStream({ stream: result.stream }),
+      // 4. Return clean, standard-compliant response using standalone helper
+      return createUIMessageStreamResponse({
+        stream: toUIMessageStream({ stream: result.stream }),
+      });
     });
   } catch (error: any) {
     return new Response(JSON.stringify({ error: error.message }), {
