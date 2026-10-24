@@ -4,8 +4,11 @@ import { useEffect, useState } from "react";
 import { MemoryLocalApp } from "@/components/kbm-elements/memory-local-app";
 import { KnowledgeNode } from "@/types/knowledge";
 import { getUserGraph } from "@/lib/github/actions/get-user-graph";
+import { authClient } from "@/lib/auth-client";
+import { Button } from "@/components/ui/button";
+import { GithubLogoIcon } from "@phosphor-icons/react";
 
-type Status = "idle" | "loading" | "ready" | "unauth";
+type Status = "idle" | "loading" | "ready" | "unauth" | "authError" | "error";
 
 export function UserGitHubApp() {
   const [nodes, setNodes] = useState<KnowledgeNode[]>([]);
@@ -15,17 +18,15 @@ export function UserGitHubApp() {
   useEffect(() => {
     let mounted = true;
 
-    getUserGraph().then(({ nodes: fetchedNodes, error: err }) => {
+    getUserGraph().then(({ nodes: fetchedNodes, status: s, error: err }) => {
       if (!mounted) return;
 
-      if (err) {
-        setStatus("unauth");
-        setError(err);
-        return;
-      }
+      setStatus(s === "success" ? "ready" : s);
+      setError(err ?? null);
 
-      setNodes(fetchedNodes);
-      setStatus("ready");
+      if (s === "success") {
+        setNodes(fetchedNodes);
+      }
     });
 
     return () => {
@@ -33,8 +34,15 @@ export function UserGitHubApp() {
     };
   }, []);
 
+  const handleConnectGitHub = async () => {
+    await authClient.signIn.social({ provider: "github" });
+  };
+
   if (status === "loading") return <GitHubSkeleton />;
-  if (status === "unauth") return <ConnectGitHub error={error} />;
+  if (status === "unauth") return <ConnectGitHub onConnect={handleConnectGitHub} />;
+  if (status === "authError")
+    return <ConnectGitHub onConnect={handleConnectGitHub} error={error} isReconnect />;
+  if (status === "error") return <ErrorState error={error} />;
   return <MemoryLocalApp initialNodes={nodes} />;
 }
 
@@ -138,22 +146,53 @@ function GraphPanelSkeletonInline() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Unauth state                                                       */
+/* Unauth / auth-error state                                          */
 /* ------------------------------------------------------------------ */
 
-function ConnectGitHub({ error }: { error: string | null }) {
+function ConnectGitHub({
+  onConnect,
+  error,
+  isReconnect = false,
+}: {
+  onConnect: () => void;
+  error?: string | null;
+  isReconnect?: boolean;
+}) {
   return (
     <main className="h-dvh flex flex-col items-center justify-center bg-background text-muted-foreground">
       <div className="rounded-full h-12 w-12 bg-border mb-4" />
-      <h2 className="text-sm font-medium text-foreground">No GitHub context</h2>
+      <h2 className="text-sm font-medium text-foreground">
+        {isReconnect ? "GitHub connection expired" : "No GitHub context"}
+      </h2>
       <p className="mt-1 text-xs text-center max-w-xs px-4">
-        Sign in and link a GitHub token to load your knowledge base.
+        {isReconnect
+          ? "Your GitHub token is invalid. Reconnect to load your knowledge base."
+          : "Sign in and link a GitHub token to load your knowledge base."}
       </p>
+      <Button
+        onClick={onConnect}
+        className="mt-4"
+      >
+        <GithubLogoIcon className="mr-2 h-4 w-4" />
+        {isReconnect ? "Reconnect GitHub" : "Connect GitHub"}
+      </Button>
       {error && (
-        <p className="mt-2 text-xs text-destructive/70 px-4">
+        <p className="mt-2 text-xs text-destructive/70 px-4 max-w-xs text-center">
           {error}
         </p>
       )}
+    </main>
+  );
+}
+
+function ErrorState({ error }: { error: string | null }) {
+  return (
+    <main className="h-dvh flex flex-col items-center justify-center bg-background text-muted-foreground">
+      <div className="rounded-full h-12 w-12 bg-border mb-4" />
+      <h2 className="text-sm font-medium text-foreground">Something went wrong</h2>
+      <p className="mt-1 text-xs text-center max-w-xs px-4">
+        {error || "Unable to load your knowledge base."}
+      </p>
     </main>
   );
 }
