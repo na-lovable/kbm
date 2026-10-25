@@ -1,11 +1,7 @@
 import env from "@/lib/env";
 import { Octokit } from "@octokit/rest";
 import matter from "gray-matter";
-
-const octokit = new Octokit({ auth: env.GITHUB_TOKEN });
-const OWNER = env.GITHUB_REPO_OWNER;
-const REPO = env.GITHUB_REPO_NAME;
-const BRANCH = env.GITHUB_REPO_BRANCH;
+import { getCurrentGitHubContext } from "./context";
 
 // ─── Types ───────────────────────────────────────────
 
@@ -19,6 +15,53 @@ export interface GitHubFile {
 export interface FileChange {
   path: string;
   content: string;
+}
+
+export interface RepoConfig {
+  owner: string;
+  repo: string;
+  branch: string;
+}
+
+// ─── Octokit Instance Management ─────────────────────
+
+const octokitCache = new Map<string, Octokit>();
+
+function getOctokit(token: string): Octokit {
+  let instance = octokitCache.get(token);
+  if (!instance) {
+    instance = new Octokit({ auth: token });
+    octokitCache.set(token, instance);
+  }
+  return instance;
+}
+
+// Fallback singleton for single-user mode (env-based, no auth)
+const fallbackOctokit = env.GITHUB_TOKEN
+  ? getOctokit(env.GITHUB_TOKEN)
+  : null;
+
+function resolveConfig(): { octokit: Octokit; config: RepoConfig } {
+  const ctx = getCurrentGitHubContext();
+  if (ctx) {
+    return {
+      octokit: getOctokit(ctx.token),
+      config: { owner: ctx.owner, repo: ctx.repo, branch: ctx.branch },
+    };
+  }
+  if (!fallbackOctokit) {
+    throw new Error(
+      "GitHub not configured: no user session and no GITHUB_TOKEN environment variable.",
+    );
+  }
+  return {
+    octokit: fallbackOctokit,
+    config: {
+      owner: env.GITHUB_REPO_OWNER!,
+      repo: env.GITHUB_REPO_NAME!,
+      branch: env.GITHUB_REPO_BRANCH!,
+    },
+  };
 }
 
 // ─── Path Helpers ────────────────────────────────────
@@ -41,32 +84,28 @@ function decodeContent(encoded: string): string {
   return Buffer.from(encoded, "base64").toString("utf-8");
 }
 
-// ─── Core CRUD Operations ───────────────────────────
+// ─── Core CRUD Operations (implementations) ─────────
 
-/**
- * List all markdown files in the repository recursively.
- * Uses Git Trees API for efficient single-request listing.
- */
-export async function listFiles(): Promise<string[]> {
+async function listFilesImpl(
+  octokit: Octokit,
+  config: RepoConfig,
+): Promise<string[]> {
   try {
-    // Get the latest commit SHA on the branch
     const { data: refData } = await octokit.git.getRef({
-      owner: OWNER,
-      repo: REPO,
-      ref: `heads/${BRANCH}`,
+      owner: config.owner,
+      repo: config.repo,
+      ref: `heads/${config.branch}`,
     });
 
     const commitSha = refData.object.sha;
 
-    // Get the tree recursively
     const { data: treeData } = await octokit.git.getTree({
-      owner: OWNER,
-      repo: REPO,
+      owner: config.owner,
+      repo: config.repo,
       tree_sha: commitSha,
       recursive: "1",
     });
 
-    // Filter for .md files only, return paths without .md extension
     return treeData.tree
       .filter(
         (item) =>
@@ -82,18 +121,18 @@ export async function listFiles(): Promise<string[]> {
   }
 }
 
-/**
- * Read a single file's content from the repository.
- * Returns null if file not found.
- */
-export async function readFile(relPath: string): Promise<string | null> {
+async function readFileImpl(
+  octokit: Octokit,
+  config: RepoConfig,
+  relPath: string,
+): Promise<string | null> {
   try {
     const repoPath = toRepoPath(relPath);
     const { data } = await octokit.repos.getContent({
-      owner: OWNER,
-      repo: REPO,
+      owner: config.owner,
+      repo: config.repo,
       path: repoPath,
-      ref: BRANCH,
+      ref: config.branch,
     });
 
     if ("content" in data && data.content) {
@@ -109,24 +148,21 @@ export async function readFile(relPath: string): Promise<string | null> {
   }
 }
 
-/**
- * Read a file's frontmatter and content separately.
- */
-export async function readFileWithFrontMatter(
+async function readFileWithFrontMatterImpl(
+  octokit: Octokit,
+  config: RepoConfig,
   relPath: string,
 ): Promise<{ data: Record<string, any>; content: string } | null> {
-  const raw = await readFile(relPath);
+  const raw = await readFileImpl(octokit, config, relPath);
   if (!raw) return null;
 
   const { data, content } = matter(raw);
   return { data, content };
 }
 
-/**
- * Write or update a file in the repository.
- * If the file exists, it updates; otherwise creates new.
- */
-export async function writeFile(
+async function writeFileImpl(
+  octokit: Octokit,
+  config: RepoConfig,
   relPath: string,
   content: string,
   message: string,
@@ -134,14 +170,13 @@ export async function writeFile(
   try {
     const repoPath = toRepoPath(relPath);
 
-    // Try to get existing file SHA (needed for updates)
     let existingSha: string | undefined;
     try {
       const { data } = await octokit.repos.getContent({
-        owner: OWNER,
-        repo: REPO,
+        owner: config.owner,
+        repo: config.repo,
         path: repoPath,
-        ref: BRANCH,
+        ref: config.branch,
       });
       if ("sha" in data) {
         existingSha = data.sha;
@@ -151,13 +186,13 @@ export async function writeFile(
     }
 
     const { data } = await octokit.repos.createOrUpdateFileContents({
-      owner: OWNER,
-      repo: REPO,
+      owner: config.owner,
+      repo: config.repo,
       path: repoPath,
       message,
       content: encodeContent(content),
       sha: existingSha,
-      branch: BRANCH,
+      branch: config.branch,
     });
 
     return {
@@ -170,22 +205,20 @@ export async function writeFile(
   }
 }
 
-/**
- * Delete a file from the repository.
- */
-export async function deleteFile(
+async function deleteFileImpl(
+  octokit: Octokit,
+  config: RepoConfig,
   relPath: string,
   message: string,
 ): Promise<{ success: boolean }> {
   try {
     const repoPath = toRepoPath(relPath);
 
-    // Get the file SHA (required for deletion)
     const { data } = await octokit.repos.getContent({
-      owner: OWNER,
-      repo: REPO,
+      owner: config.owner,
+      repo: config.repo,
       path: repoPath,
-      ref: BRANCH,
+      ref: config.branch,
     });
 
     if (!("sha" in data)) {
@@ -193,12 +226,12 @@ export async function deleteFile(
     }
 
     await octokit.repos.deleteFile({
-      owner: OWNER,
-      repo: REPO,
+      owner: config.owner,
+      repo: config.repo,
       path: repoPath,
       message,
       sha: data.sha,
-      branch: BRANCH,
+      branch: config.branch,
     });
 
     return { success: true };
@@ -211,40 +244,34 @@ export async function deleteFile(
   }
 }
 
-/**
- * Rename a file (read old, delete old, create new).
- */
-export async function renameFile(
+async function renameFileImpl(
+  octokit: Octokit,
+  config: RepoConfig,
   oldRelPath: string,
   newRelPath: string,
   message: string,
 ): Promise<{ success: boolean }> {
-  // Read the old file content
-  const content = await readFile(oldRelPath);
+  const content = await readFileImpl(octokit, config, oldRelPath);
   if (content === null) {
     throw new Error(`Source file ${oldRelPath} not found`);
   }
 
-  // Delete old file
-  await deleteFile(oldRelPath, `Rename: ${oldRelPath} → ${newRelPath}`);
-
-  // Create new file with same content
-  await writeFile(newRelPath, content, message);
+  await deleteFileImpl(octokit, config, oldRelPath, `Rename: ${oldRelPath} → ${newRelPath}`);
+  await writeFileImpl(octokit, config, newRelPath, content, message);
 
   return { success: true };
 }
 
-/**
- * Get commit history for a specific file.
- */
-export async function getFileHistory(
+async function getFileHistoryImpl(
+  octokit: Octokit,
+  config: RepoConfig,
   relPath: string,
 ): Promise<Array<{ sha: string; date: string; message: string }>> {
   try {
     const repoPath = toRepoPath(relPath);
     const { data } = await octokit.repos.listCommits({
-      owner: OWNER,
-      repo: REPO,
+      owner: config.owner,
+      repo: config.repo,
       path: repoPath,
       per_page: 50,
     });
@@ -260,18 +287,17 @@ export async function getFileHistory(
   }
 }
 
-/**
- * Get file content at a specific commit.
- */
-export async function getFileAtCommit(
+async function getFileAtCommitImpl(
+  octokit: Octokit,
+  config: RepoConfig,
   relPath: string,
   commitSha: string,
 ): Promise<string | null> {
   try {
     const repoPath = toRepoPath(relPath);
     const { data } = await octokit.repos.getContent({
-      owner: OWNER,
-      repo: REPO,
+      owner: config.owner,
+      repo: config.repo,
       path: repoPath,
       ref: commitSha,
     });
@@ -285,37 +311,32 @@ export async function getFileAtCommit(
   }
 }
 
-// ─── Batch Operations ────────────────────────────────
+// ─── Batch Operations (implementations) ─────────────
 
-/**
- * Perform multiple file changes in a single atomic commit.
- * Uses Git Data API for true atomic batch operations.
- */
-export async function batchCommit(
+async function batchCommitImpl(
+  octokit: Octokit,
+  config: RepoConfig,
   changes: FileChange[],
   deletions: string[],
   message: string,
 ): Promise<{ success: boolean; sha?: string }> {
   try {
-    // 1. Get the latest commit on the branch
     const { data: refData } = await octokit.git.getRef({
-      owner: OWNER,
-      repo: REPO,
-      ref: `heads/${BRANCH}`,
+      owner: config.owner,
+      repo: config.repo,
+      ref: `heads/${config.branch}`,
     });
 
     const latestCommitSha = refData.object.sha;
 
-    // 2. Get the base tree
     const { data: commitData } = await octokit.git.getCommit({
-      owner: OWNER,
-      repo: REPO,
+      owner: config.owner,
+      repo: config.repo,
       commit_sha: latestCommitSha,
     });
 
     const baseTreeSha = commitData.tree.sha;
 
-    // 3. Build tree entries
     const treeEntries: Array<{
       path: string;
       mode: "100644";
@@ -324,7 +345,6 @@ export async function batchCommit(
       content?: string;
     }> = [];
 
-    // Add file changes
     for (const change of changes) {
       const repoPath = toRepoPath(change.path);
       treeEntries.push({
@@ -335,7 +355,6 @@ export async function batchCommit(
       });
     }
 
-    // Add deletions (sha: null removes the file)
     for (const delPath of deletions) {
       const repoPath = toRepoPath(delPath);
       treeEntries.push({
@@ -346,28 +365,25 @@ export async function batchCommit(
       });
     }
 
-    // 4. Create the new tree
     const { data: newTree } = await octokit.git.createTree({
-      owner: OWNER,
-      repo: REPO,
+      owner: config.owner,
+      repo: config.repo,
       base_tree: baseTreeSha,
       tree: treeEntries,
     });
 
-    // 5. Create the commit
     const { data: newCommit } = await octokit.git.createCommit({
-      owner: OWNER,
-      repo: REPO,
+      owner: config.owner,
+      repo: config.repo,
       message,
       tree: newTree.sha,
       parents: [latestCommitSha],
     });
 
-    // 6. Update the branch reference
     await octokit.git.updateRef({
-      owner: OWNER,
-      repo: REPO,
-      ref: `heads/${BRANCH}`,
+      owner: config.owner,
+      repo: config.repo,
+      ref: `heads/${config.branch}`,
       sha: newCommit.sha,
       force: false,
     });
@@ -379,20 +395,20 @@ export async function batchCommit(
   }
 }
 
-// ─── Utility ─────────────────────────────────────────
+// ─── Utility (implementations) ────────────────────────
 
-/**
- * Check if the GitHub connection is working.
- */
-export async function healthCheck(): Promise<{
+async function healthCheckImpl(
+  octokit: Octokit,
+  config: RepoConfig,
+): Promise<{
   connected: boolean;
   repo?: string;
   error?: string;
 }> {
   try {
     const { data } = await octokit.repos.get({
-      owner: OWNER,
-      repo: REPO,
+      owner: config.owner,
+      repo: config.repo,
     });
     return { connected: true, repo: data.full_name };
   } catch (error: any) {
@@ -400,20 +416,166 @@ export async function healthCheck(): Promise<{
   }
 }
 
-/**
- * Get the SHA of a file (for optimistic concurrency).
- */
-export async function getFileSha(relPath: string): Promise<string | null> {
+async function getFileShaImpl(
+  octokit: Octokit,
+  config: RepoConfig,
+  relPath: string,
+): Promise<string | null> {
   try {
     const repoPath = toRepoPath(relPath);
     const { data } = await octokit.repos.getContent({
-      owner: OWNER,
-      repo: REPO,
+      owner: config.owner,
+      repo: config.repo,
       path: repoPath,
-      ref: BRANCH,
+      ref: config.branch,
     });
     return "sha" in data ? data.sha : null;
   } catch {
     return null;
   }
+}
+
+// ─── Public API (ALS-aware, backward compatible) ────
+
+export async function listFiles(): Promise<string[]> {
+  const { octokit, config } = resolveConfig();
+  return listFilesImpl(octokit, config);
+}
+
+export async function readFile(relPath: string): Promise<string | null> {
+  const { octokit, config } = resolveConfig();
+  return readFileImpl(octokit, config, relPath);
+}
+
+export async function readFileWithFrontMatter(
+  relPath: string,
+): Promise<{ data: Record<string, any>; content: string } | null> {
+  const { octokit, config } = resolveConfig();
+  return readFileWithFrontMatterImpl(octokit, config, relPath);
+}
+
+export async function writeFile(
+  relPath: string,
+  content: string,
+  message: string,
+): Promise<{ success: boolean; sha?: string }> {
+  const { octokit, config } = resolveConfig();
+  return writeFileImpl(octokit, config, relPath, content, message);
+}
+
+export async function deleteFile(
+  relPath: string,
+  message: string,
+): Promise<{ success: boolean }> {
+  const { octokit, config } = resolveConfig();
+  return deleteFileImpl(octokit, config, relPath, message);
+}
+
+export async function renameFile(
+  oldRelPath: string,
+  newRelPath: string,
+  message: string,
+): Promise<{ success: boolean }> {
+  const { octokit, config } = resolveConfig();
+  return renameFileImpl(octokit, config, oldRelPath, newRelPath, message);
+}
+
+export async function getFileHistory(
+  relPath: string,
+): Promise<Array<{ sha: string; date: string; message: string }>> {
+  const { octokit, config } = resolveConfig();
+  return getFileHistoryImpl(octokit, config, relPath);
+}
+
+export async function getFileAtCommit(
+  relPath: string,
+  commitSha: string,
+): Promise<string | null> {
+  const { octokit, config } = resolveConfig();
+  return getFileAtCommitImpl(octokit, config, relPath, commitSha);
+}
+
+export async function batchCommit(
+  changes: FileChange[],
+  deletions: string[],
+  message: string,
+): Promise<{ success: boolean; sha?: string }> {
+  const { octokit, config } = resolveConfig();
+  return batchCommitImpl(octokit, config, changes, deletions, message);
+}
+
+export async function healthCheck(): Promise<{
+  connected: boolean;
+  repo?: string;
+  error?: string;
+}> {
+  const { octokit, config } = resolveConfig();
+  return healthCheckImpl(octokit, config);
+}
+
+export async function getFileSha(relPath: string): Promise<string | null> {
+  const { octokit, config } = resolveConfig();
+  return getFileShaImpl(octokit, config, relPath);
+}
+
+// ─── Factory (explicit per-user store) ──────────────
+
+/**
+ * Create a file store bound to a specific GitHub token and repository.
+ * Useful for server-side operations where the user context is known
+ * explicitly (e.g. auto-creating repos, background jobs, tests).
+ */
+export function createFileStore(
+  token: string,
+  config: RepoConfig,
+): {
+  listFiles: () => Promise<string[]>;
+  readFile: (relPath: string) => Promise<string | null>;
+  readFileWithFrontMatter: (
+    relPath: string,
+  ) => Promise<{ data: Record<string, any>; content: string } | null>;
+  writeFile: (
+    relPath: string,
+    content: string,
+    message: string,
+  ) => Promise<{ success: boolean; sha?: string }>;
+  deleteFile: (relPath: string, message: string) => Promise<{ success: boolean }>;
+  renameFile: (
+    oldRelPath: string,
+    newRelPath: string,
+    message: string,
+  ) => Promise<{ success: boolean }>;
+  getFileHistory: (
+    relPath: string,
+  ) => Promise<Array<{ sha: string; date: string; message: string }>>;
+  getFileAtCommit: (relPath: string, commitSha: string) => Promise<string | null>;
+  batchCommit: (
+    changes: FileChange[],
+    deletions: string[],
+    message: string,
+  ) => Promise<{ success: boolean; sha?: string }>;
+  healthCheck: () => Promise<{ connected: boolean; repo?: string; error?: string }>;
+  getFileSha: (relPath: string) => Promise<string | null>;
+} {
+  const octokit = getOctokit(token);
+  return {
+    listFiles: () => listFilesImpl(octokit, config),
+    readFile: (relPath: string) => readFileImpl(octokit, config, relPath),
+    readFileWithFrontMatter: (relPath: string) =>
+      readFileWithFrontMatterImpl(octokit, config, relPath),
+    writeFile: (relPath: string, content: string, message: string) =>
+      writeFileImpl(octokit, config, relPath, content, message),
+    deleteFile: (relPath: string, message: string) =>
+      deleteFileImpl(octokit, config, relPath, message),
+    renameFile: (oldRelPath: string, newRelPath: string, message: string) =>
+      renameFileImpl(octokit, config, oldRelPath, newRelPath, message),
+    getFileHistory: (relPath: string) =>
+      getFileHistoryImpl(octokit, config, relPath),
+    getFileAtCommit: (relPath: string, commitSha: string) =>
+      getFileAtCommitImpl(octokit, config, relPath, commitSha),
+    batchCommit: (changes: FileChange[], deletions: string[], message: string) =>
+      batchCommitImpl(octokit, config, changes, deletions, message),
+    healthCheck: () => healthCheckImpl(octokit, config),
+    getFileSha: (relPath: string) => getFileShaImpl(octokit, config, relPath),
+  };
 }
